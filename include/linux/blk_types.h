@@ -18,6 +18,16 @@ typedef void (bio_end_io_t) (struct bio *, int);
 typedef void (bio_destructor_t) (struct bio *);
 
 /*
+ * Block error status values.  See block/blk-core:blk_errors for the details.
+ * Alpha cannot write a byte atomically, so we need to use 32-bit value.
+ */
+#if defined(CONFIG_ALPHA) && !defined(__alpha_bwx__)
+typedef u32 __bitwise blk_status_t;
+#else
+typedef u8 __bitwise blk_status_t;
+#endif
+
+/*
  * was unsigned short, but we might as well be ready for > 64kB I/O pages
  */
 struct bio_vec {
@@ -35,6 +45,11 @@ struct bio {
 						   sectors */
 	struct bio		*bi_next;	/* request queue link */
 	struct block_device	*bi_bdev;
+	unsigned int		bi_opf;		/* bottom bits req flags,
+						 * top bits REQ_OP. Use
+						 * accessors.
+						 */
+
 	unsigned long		bi_flags;	/* status, command, etc */
 	unsigned long		bi_rw;		/* bottom bits READ/WRITE,
 						 * top bits priority
@@ -107,6 +122,54 @@ struct bio {
 #define BIO_POOL_IDX(bio)	((bio)->bi_flags >> BIO_POOL_OFFSET)
 
 #endif /* CONFIG_BLOCK */
+
+/*
+ * Operations and flags common to the bio and request structures.
+ * We use 8 bits for encoding the operation, and the remaining 24 for flags.
+ *
+ * The least significant bit of the operation number indicates the data
+ * transfer direction:
+ *
+ *   - if the least significant bit is set transfers are TO the device
+ *   - if the least significant bit is not set transfers are FROM the device
+ *
+ * If a operation does not transfer data the least significant bit has no
+ * meaning.
+ */
+#define REQ_OP_BITS	8
+#define REQ_OP_MASK	((1 << REQ_OP_BITS) - 1)
+#define REQ_FLAG_BITS	24
+
+enum req_opf {
+    /* read sectors from the device */
+    REQ_OP_READ		= 0,
+    /* write sectors to the device */
+    REQ_OP_WRITE		= 1,
+    /* flush the volatile write cache */
+    REQ_OP_FLUSH		= 2,
+    /* discard sectors */
+    REQ_OP_DISCARD		= 3,
+    /* get zone information */
+    REQ_OP_ZONE_REPORT	= 4,
+    /* securely erase sectors */
+    REQ_OP_SECURE_ERASE	= 5,
+    /* seset a zone write pointer */
+    REQ_OP_ZONE_RESET	= 6,
+    /* write the same sector many times */
+    REQ_OP_WRITE_SAME	= 7,
+    /* write the zero filled sector many times */
+    REQ_OP_WRITE_ZEROES	= 9,
+
+    /* SCSI passthrough using struct scsi_request */
+    REQ_OP_SCSI_IN		= 32,
+    REQ_OP_SCSI_OUT		= 33,
+    /* Driver private requests */
+    REQ_OP_DRV_IN		= 34,
+    REQ_OP_DRV_OUT		= 35,
+
+    REQ_OP_LAST,
+};
+
 
 /*
  * Request flags.  For use in the cmd_flags field of struct request, and in
@@ -196,5 +259,8 @@ enum rq_flag_bits {
 #define REQ_IO_STAT		(1 << __REQ_IO_STAT)
 #define REQ_MIXED_MERGE		(1 << __REQ_MIXED_MERGE)
 #define REQ_SECURE		(1 << __REQ_SECURE)
+
+#define bio_op(bio) \
+    ((bio)->bi_opf & REQ_OP_MASK)
 
 #endif /* __LINUX_BLK_TYPES_H */

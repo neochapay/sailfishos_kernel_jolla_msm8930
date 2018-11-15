@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2007 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License v2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
-#ifndef __BTRFS_ORDERED_DATA__
-#define __BTRFS_ORDERED_DATA__
+#ifndef BTRFS_ORDERED_DATA_H
+#define BTRFS_ORDERED_DATA_H
 
 /* one of these per inode */
 struct btrfs_ordered_inode_tree {
@@ -58,15 +45,20 @@ struct btrfs_ordered_sum {
 
 #define BTRFS_ORDERED_COMPRESSED 3 /* writing a zlib compressed extent */
 
-#define BTRFS_ORDERED_PREALLOC 4 /* set when writing to prealloced extent */
+#define BTRFS_ORDERED_PREALLOC 4 /* set when writing to preallocated extent */
 
 #define BTRFS_ORDERED_DIRECT 5 /* set when we're doing DIO with this extent */
 
 #define BTRFS_ORDERED_IOERR 6 /* We had an io error when writing this out */
 
-#define BTRFS_ORDERED_UPDATED_ISIZE 7 /* indicates wether this ordered extent
+#define BTRFS_ORDERED_UPDATED_ISIZE 7 /* indicates whether this ordered extent
 				       * has done its due diligence in updating
 				       * the isize. */
+#define BTRFS_ORDERED_TRUNCATED 8 /* Set when we have to truncate an extent */
+
+#define BTRFS_ORDERED_PENDING 9 /* We are waiting for this ordered extent to
+				  * complete in the current transaction. */
+#define BTRFS_ORDERED_REGULAR 10 /* Regular IO for COW */
 
 struct btrfs_ordered_extent {
 	/* logical offset in the file */
@@ -84,6 +76,19 @@ struct btrfs_ordered_extent {
 	/* number of bytes that still need writing */
 	u64 bytes_left;
 
+	/*
+	 * the end of the ordered extent which is behind it but
+	 * didn't update disk_i_size. Please see the comment of
+	 * btrfs_ordered_update_i_size();
+	 */
+	u64 outstanding_isize;
+
+	/*
+	 * If we get truncated we need to adjust the file extent we enter for
+	 * this ordered extent so that we do not expose stale data.
+	 */
+	u64 truncated_len;
+
 	/* flags (described above) */
 	unsigned long flags;
 
@@ -99,6 +104,12 @@ struct btrfs_ordered_extent {
 	/* list of checksums for insertion when the extent io is done */
 	struct list_head list;
 
+	/* If we need to wait on this to be done */
+	struct list_head log_list;
+
+	/* If the transaction needs to wait on this ordered extent */
+	struct list_head trans_list;
+
 	/* used to wait for the BTRFS_ORDERED_COMPLETE bit */
 	wait_queue_head_t wait;
 
@@ -109,18 +120,23 @@ struct btrfs_ordered_extent {
 	struct list_head root_extent_list;
 
 	struct btrfs_work work;
-};
 
+	struct completion completion;
+	struct btrfs_work flush_work;
+	struct list_head work_list;
+};
 
 /*
  * calculates the total size you need to allocate for an ordered sum
  * structure spanning 'bytes' in the file
  */
-static inline int btrfs_ordered_sum_size(struct btrfs_root *root,
+static inline int btrfs_ordered_sum_size(struct btrfs_fs_info *fs_info,
 					 unsigned long bytes)
 {
-	int num_sectors = (int)DIV_ROUND_UP(bytes, root->sectorsize);
-	return sizeof(struct btrfs_ordered_sum) + num_sectors * sizeof(u32);
+	int num_sectors = (int)DIV_ROUND_UP(bytes, fs_info->sectorsize);
+	int csum_size = btrfs_super_csum_size(fs_info->super_copy);
+
+	return sizeof(struct btrfs_ordered_sum) + num_sectors * csum_size;
 }
 
 static inline void
@@ -155,20 +171,22 @@ struct btrfs_ordered_extent *btrfs_lookup_ordered_extent(struct inode *inode,
 							 u64 file_offset);
 void btrfs_start_ordered_extent(struct inode *inode,
 				struct btrfs_ordered_extent *entry, int wait);
-void btrfs_wait_ordered_range(struct inode *inode, u64 start, u64 len);
+int btrfs_wait_ordered_range(struct inode *inode, u64 start, u64 len);
 struct btrfs_ordered_extent *
 btrfs_lookup_first_ordered_extent(struct inode * inode, u64 file_offset);
-struct btrfs_ordered_extent *btrfs_lookup_ordered_range(struct inode *inode,
-							u64 file_offset,
-							u64 len);
+struct btrfs_ordered_extent *btrfs_lookup_ordered_range(
+		struct btrfs_inode *inode,
+		u64 file_offset,
+		u64 len);
 int btrfs_ordered_update_i_size(struct inode *inode, u64 offset,
 				struct btrfs_ordered_extent *ordered);
 int btrfs_find_ordered_sum(struct inode *inode, u64 offset, u64 disk_bytenr,
 			   u32 *sum, int len);
-void btrfs_run_ordered_operations(struct btrfs_root *root, int wait);
-void btrfs_add_ordered_operation(struct btrfs_trans_handle *trans,
-				 struct btrfs_root *root,
-				 struct inode *inode);
-void btrfs_wait_ordered_extents(struct btrfs_root *root,
-				int nocow_only, int delay_iput);
+u64 btrfs_wait_ordered_extents(struct btrfs_root *root, u64 nr,
+			       const u64 range_start, const u64 range_len);
+u64 btrfs_wait_ordered_roots(struct btrfs_fs_info *fs_info, u64 nr,
+			      const u64 range_start, const u64 range_len);
+int __init ordered_data_init(void);
+void __cold ordered_data_exit(void);
+
 #endif
