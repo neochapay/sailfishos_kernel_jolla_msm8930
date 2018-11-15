@@ -883,7 +883,8 @@ int __btrfs_write_out_cache(struct btrfs_root *root, struct inode *inode,
 	struct io_ctl io_ctl;
 	struct list_head bitmap_list;
 	struct btrfs_key key;
-	u64 start, extent_start, extent_end, len;
+	u64 start = 0;
+	u64 extent_start, extent_end, len;
 	int entries = 0;
 	int bitmaps = 0;
 	int ret;
